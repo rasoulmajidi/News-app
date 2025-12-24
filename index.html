@@ -1,0 +1,95 @@
+import feedparser
+import snscrape.twitter as sntwitter
+import pandas as pd
+from datetime import datetime
+import re
+
+# لیست RSS feeds منابع معتبر (انگلیسی و فارسی/بین‌المللی)
+RSS_FEEDS = [
+    "http://www.tehrantimes.com/rss",                  # Tehran Times (انگلیسی ایرانی)
+    "https://www.tasnimnews.com/en/rss/feed/0",        # Tasnim News (انگلیسی)
+    "https://www.jpost.com/rss/rssfeedsfrontpage.aspx", # Jerusalem Post
+    "https://www.timesofisrael.com/feed/",             # Times of Israel
+    "https://www.aljazeera.com/xml/rss/all.xml",       # Al Jazeera (خنثی و پوشش خوب خاورمیانه)
+    "https://www.reuters.com/arc/outboundfeeds/news-rss/?outputType=xml",  # Reuters
+    "https://www.bbc.com/persian/rss",                 # BBC Persian
+    "https://en.irna.ir/rss",                          # IRNA English (اگر داشته باشه، یا جایگزین)
+]
+
+# کلمات کلیدی برای فیلتر اخبار (انگلیسی و فارسی)
+KEYWORDS_EN = ["Iran", "Israel", "Iran-Israel", "Tehran", "Netanyahu", "IRGC", "IDF"]
+KEYWORDS_FA = ["ایران", "اسرائیل", "اسراییل", "تهران", "نتانیاهو", "سپاه", "ارتش اسرائیل"]
+
+def is_relevant(title, summary=""):
+    text = (title + " " + summary).lower()
+    fa_text = title + " " + summary
+    return (
+        any(k.lower() in text for k in KEYWORDS_EN) and
+        any(k in fa_text for k in KEYWORDS_FA)
+    )
+
+# جمع‌آوری اخبار از RSS
+def fetch_news():
+    news_items = []
+    for url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:20]:  # فقط ۲۰ تا جدید از هر منبع
+                if is_relevant(entry.title, entry.get('summary', '')):
+                    news_items.append({
+                        'title': entry.title,
+                        'link': entry.link,
+                        'published': entry.get('published', 'Unknown'),
+                        'source': feed.feed.get('title', url),
+                        'type': 'News'
+                    })
+        except Exception as e:
+            print(f"Error parsing {url}: {e}")
+    return news_items
+
+# جمع‌آوری توییت‌های مهم (با حداقل لایک یا ریتوییت برای اهمیت)
+def fetch_tweets(limit=50):
+    query = "(Iran Israel OR ایران اسرائیل OR ایران اسراییل) min_faves:100 OR min_retweets:50 lang:en OR lang:fa since:2025-12-01"
+    tweets = []
+    for i, tweet in enumerate(sntwitter.TwitterSearchScraper(query).get_items()):
+        if i >= limit:
+            break
+        tweets.append({
+            'title': tweet.rawContent[:100] + "...",  # خلاصه توییت
+            'link': f"https://twitter.com/user/status/{tweet.id}",
+            'published': tweet.date.strftime('%Y-%m-%d %H:%M'),
+            'source': f"Twitter - @{tweet.user.username} (Likes: {tweet.likeCount}, RT: {tweet.retweetCount})",
+            'type': 'Tweet'
+        })
+    return tweets
+
+# ترکیب و مرتب کردن همه
+def main():
+    print("در حال جمع‌آوری اخبار...")
+    news = fetch_news()
+    
+    print("در حال جمع‌آوری توییت‌ها...")
+    tweets = fetch_tweets(limit=30)  # می‌تونی بیشتر کنی
+    
+    all_items = news + tweets
+    
+    # مرتب بر اساس تاریخ (اگر ممکن باشه)
+    df = pd.DataFrame(all_items)
+    if not df.empty:
+        df['published_parsed'] = pd.to_datetime(df['published'], errors='coerce')
+        df = df.sort_values(by='published_parsed', ascending=False)
+        df = df.drop(columns=['published_parsed'])
+    
+    # نمایش لیست
+    print("\n" + "="*80)
+    print("لیست اخبار و توییت‌های مهم مربوط به ایران-اسرائیل (جدیدترین اول)")
+    print("="*80)
+    for idx, row in df.iterrows():
+        print(f"[{row['type']}] {row['published']}")
+        print(f"منبع: {row['source']}")
+        print(f"عنوان/خلاصه: {row['title']}")
+        print(f"لینک: {row['link']}")
+        print("-"*80)
+
+if __name__ == "__main__":
+    main()
